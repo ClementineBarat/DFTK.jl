@@ -56,7 +56,7 @@ Create an anderson-accelerated SCF solver for the [`self_consistent_field`](@ref
 [^CDLS21]: Chupin, Dupuy, Legendre, Séré. Math. Model. Num. Anal. **55**, 2785 (2021) dDOI [10.1051/m2an/2021069](https://doi.org/10.1051/m2an/2021069)
 """
 function scf_anderson_solver(; m_start::Integer=1, kwargs...)
-    function anderson(f, x0, info0; maxiter)
+    function anderson(f, x0::ScfVariables, info0; maxiter)
         T = eltype(x0)
         x = x0
         info = info0
@@ -72,7 +72,8 @@ function scf_anderson_solver(; m_start::Integer=1, kwargs...)
             else
                 @debug "Using Anderson acceleration in iteration $i"
                 residual = fx - x
-                x = acceleration(x, one(T), residual)
+                v = acceleration(flatten(x), one(T), flatten(residual))
+                x = reconstruct(x0, v)
             end
         end
         (; fixpoint=x, info)

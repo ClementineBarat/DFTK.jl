@@ -52,6 +52,54 @@ end
     verbose = true
 end
 
+function get_variable(k::Symbol, info)
+    if k == :ρ
+        return info.ρout
+    elseif k == :V
+        new_ham = Hamiltonian(basis; info.ψ, info.occupation, ρ=info.ρout,
+                              eigenvalues=info.eigenvalues, εF=info.εF)
+        # Energy is silently discarded here ... not ideal
+        return total_local_potential(new_ham)
+    elseif k == :τ
+        return compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
+    elseif k == :hubbard_n
+        ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
+        if isnothing(ihubbard)
+            return nothing
+        else
+            return compute_hubbard_n(info.basis.terms[ihubbard], info.basis, info.ψ, 
+                                 info.occupation)
+        end
+    else
+        error("Unknown SCF variable $k")
+    end
+end
+
+"""
+Update the SCF variables (based on their names) from the information gathered in `info_next`.
+"""
+function update_variables(x_in::ScfVariables{NT}, info_next) where {NT}
+    x_out = ScfVariables{NT}(NamedTuple(
+        k => get_variable(k, info_next)
+        for k in propertynames(x_in)
+    ))
+end
+
+"""
+Update the new Hamiltonian `ham`, either from the density (SCF on the density) 
+or from the potential (SCF on the potential).
+"""
+function update_ham(basis, info, x::ScfVariables; kwargs...)
+    if hasproperty(x, :ρ)
+        energies, ham = energy_hamiltonian(basis, info.ψ, info.occupation;
+                                           info.eigenvalues, info.εF, x..., kwargs...)
+        return energies, ham
+    elseif hasproperty(x, :V)
+        ham = hamiltonian_with_total_potential(info.ham, x.V)
+        return info.energies, ham
+    end
+end
+
 """
 Obtain new density ρ by diagonalizing `ham`. Follows the policy imposed by the `bands`
 data structure to determine and adjust the number of bands to be computed.
@@ -132,11 +180,10 @@ Overview of parameters:
 - `callback`: Function called at each SCF iteration. Usually takes care of printing the
   intermediate state.
 """
-@timing function self_consistent_field(
+function self_consistent_field(
     basis::PlaneWaveBasis{T};
     ρ=guess_density(basis),
-    τ=any(needs_τ, basis.terms) ? zero(ρ) : nothing,
-    hubbard_n=nothing,
+    x::ScfVariables=ScfVariables(basis, ρ),
     ψ=nothing,
     occupation=nothing,
     eigenvalues=nothing,
@@ -158,6 +205,7 @@ Overview of parameters:
     seed=nothing,
     response=ResponseOptions(),  # Dummy here, only for AD
 ) where {T}
+
     if !isnothing(ψ)
         @assert length(ψ) == length(basis.kpoints)
     end
@@ -165,56 +213,49 @@ Overview of parameters:
     timeout_date = Dates.now() + maxtime
     seed = seed_task_local_rng!(seed, basis.comm_kpts)
 
-    # We do density mixing in the real representation
-    # TODO support other mixing types
-    function fixpoint_map(ρin, info)
-        (; ψ, occupation, eigenvalues, εF, n_iter, converged, timedout, τ, hubbard_n) = info
+    function fixpoint_map(x_in, info)
+
+        n_iter = info.n_iter
         n_iter += 1
 
-        # Note that ρin is not the density of ψ, and the eigenvalues
-        # are not the self-consistent ones, which makes this energy non-variational
-        energies, ham = energy_hamiltonian(basis, ψ, occupation;
-                                           exxalg, ρ=ρin, τ, hubbard_n, eigenvalues, εF, 
-                                           nbandsalg.occupation_threshold)
-
+        # Define the new Hamiltonian
+        energies, ham = update_ham(basis, info, x_in; nbandsalg.occupation_threshold)
+    
         # Diagonalize `ham` to get the new state
-        nextstate = next_density(ham, nbandsalg, fermialg; eigensolver, ψ, eigenvalues,
-                                 occupation, miniter=1,
-                                 tol=determine_diagtol(diagtolalg, info))
-        (; ψ, eigenvalues, occupation, εF, ρout) = nextstate
-        Δρ = ρout - ρin
-
-        # TODO Dirty hack. This should be solved more generally and τ and ρ should be put
-        #      on the same footing. In the future such principles will also apply
-        #      to other quantities. See discussion in
-        #      https://github.com/JuliaMolSim/DFTK.jl/issues/1065
-        if any(needs_τ, basis.terms)
-            τ = compute_kinetic_energy_density(basis, ψ, occupation)
-        end
-        ihubbard = findfirst(t -> t isa TermHubbard, basis.terms)
-        if !isnothing(ihubbard)
-            hubbard_n = compute_hubbard_n(basis.terms[ihubbard], basis, ψ, occupation)
-        end
-
+        nextstate = next_density(ham, nbandsalg, fermialg; 
+                                 eigensolver, info.ψ, info.eigenvalues, info.occupation, 
+                                 miniter=1, tol=determine_diagtol(diagtolalg, info))
         # Update info with results gathered so far
-        info_next = (; ham, basis, converged, stage=:iterate, algorithm="SCF",
-                       ρin, τ, hubbard_n, α=damping, n_iter, nbandsalg.occupation_threshold,
+        info_next = (; ham, basis, stage=:iterate, algorithm="SCF",
+                       α=damping, n_iter, nbandsalg.occupation_threshold,
                        seed, runtime_ns=time_ns() - start_ns, nextstate...,
                        diagonalization=[nextstate.diagonalization])
+        if hasproperty(x_in, :ρ)    # ρin needed for mixing
+            info_next = merge(info_next, (; ρin=x_in.ρ))
+        end
+        
+        # Update the SCF variables with info_next
+        x_out = update_variables(x_in, info_next)
+        Δx = x_out - x_in
 
-        # Compute the energy of the new state
-        if compute_consistent_energies
-            (; energies) = energy(basis, ψ, occupation; 
-                                  exxalg, ρ=ρout, τ, hubbard_n, eigenvalues, εF,
-                                  nbandsalg.occupation_threshold)
+        # Update the history in info_next
+        if compute_consistent_energies  # Compute the energy of the new state
+            (; energies) = energy(basis, info_next.ψ, info_next.occupation; 
+                                  x_out..., ρ=info_next.ρout, info_next.eigenvalues, 
+                                  info_next.εF, nbandsalg.occupation_threshold)
         end
         history_Etot = vcat(info.history_Etot, energies.total)
-        history_Δρ = vcat(info.history_Δρ, norm(Δρ) * sqrt(basis.dvol))
+        history_Δρ = info.history_Δρ
+        if hasproperty(x_in, :ρ)
+            history_Δρ = vcat(history_Δρ, norm(Δx.ρ) * sqrt(basis.dvol))
+        else
+            history_Δρ = vcat(history_Δρ, norm(info_next.ρout - info.ρout) * sqrt(basis.dvol))
+        end
         n_matvec = info.n_matvec + nextstate.n_matvec
-        info_next = merge(info_next, (; energies, history_Etot, history_Δρ, n_matvec))
+        info_next = merge(info_next, (; energies, history_Etot, n_matvec, history_Δρ))
 
-        # Apply mixing and pass it the full info as kwargs
-        ρnext = ρin .+ T(damping) .* mix_density(mixing, basis, Δρ; info_next...)
+        # Apply mixing to the SCF variables
+        x_next = x_in .+ T(damping) .* mix_variables(mixing, basis, Δx; info_next...)
 
         converged = n_iter ≥ miniter && is_converged(info_next)
         converged = mpi_bcast(converged, 0, basis.comm_kpts)
@@ -225,33 +266,35 @@ Overview of parameters:
 
         callback(info_next)
 
-        ρnext, info_next
+        x_next, info_next
     end
 
     # Note: it is assumed that, upon entry, the input density ρ is numerically identical
     #       across all MPI ranks. If not, unexpected behavior may occur. It is the caller's
     #       responsibility to ensure this is the case.
-
-    info_init = (; ρin=ρ, τ, hubbard_n, ψ, occupation, eigenvalues, εF=nothing,
+    energies, ham = energy_hamiltonian(basis, nothing, nothing; ρ)
+    info_init = (; ham, energies, ρin=ρ, ρout=ρ, ψ, occupation, eigenvalues, εF=nothing,
                    n_iter=0, n_matvec=0, timedout=false, converged=false,
                    history_Etot=T[], history_Δρ=T[])
 
     # Convergence is flagged by is_converged inside the fixpoint_map.
-    _, info = solver(fixpoint_map, ρ, info_init; maxiter)
+    _, info = solver(fixpoint_map, x, info_init; maxiter)
 
-    # We do not use the return value of solver but rather the one that got updated by fixpoint_map
+    # We do not use the return value of solver but rather the one that got updated by fixpoint_map.
     # ψ is consistent with ρout, so we return that. We also perform a last energy computation
     # to return a correct variational energy and to build a Hamiltonian without any compression
     # applied to the exchange operator.
-    (; ρin, ρout, τ, hubbard_n, ψ, occupation, eigenvalues, εF, converged) = info
+    (; ψ, occupation, eigenvalues, εF, converged) = info
+    ρout = info.ρout
+    x_out = update_variables(x, info)
     energies, ham = energy_hamiltonian(basis, ψ, occupation; 
                                        exxalg=VanillaExx(),
-                                       ρ=ρout, τ, hubbard_n, eigenvalues, εF, 
+                                       eigenvalues, εF, ρ=ρout, x_out...,
                                        nbandsalg.occupation_threshold)
 
     # Callback is run one last time with final state to allow callback to clean up
     scfres = (; ham, basis, energies, converged, nbandsalg.occupation_threshold,
-                ρ=ρout, τ, hubbard_n, α=damping, eigenvalues, occupation, εF,
+                ρ=ρout, x_out..., α=damping, eigenvalues, occupation, εF,
                 info.n_bands_converge, info.n_iter, info.n_matvec, ψ, info.diagonalization,
                 stage=:finalize, info.history_Δρ, info.history_Etot, info.timedout, mixing,
                 is_converged, nbandsalg, fermialg, diagtolalg, solver, eigensolver,
