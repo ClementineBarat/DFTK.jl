@@ -56,24 +56,27 @@ Update the SCF variables (based on their names) from the information gathered in
 """
 function update_variables(x_in::ScfVariables{NT}, info, energies; kwargs...) where {NT}
     
-    new_variables = Dict{Symbol}()
-    if hasproperty(x, :ρ)
-        new_variables[:ρ] = info.ρout
+    new_variables = (;)
+    if hasproperty(x_in, :ρ)
+        new_variables = merge(new_variables, (; ρ=info.ρout))
     end
-    if hasproperty(x, :τ)
-        new_variables[:τ] = compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
+    if hasproperty(x_in, :τ)
+        new_variables = merge(new_variables, 
+            (; τ=compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)))
     end
-    if hasproperty(x, :hubbard_n)
+    if hasproperty(x_in, :hubbard_n)
         ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
         @assert !isnothing(ihubbard)
-        new_variables[:hubbard_n] = compute_hubbard_n(info.basis.terms[ihubbard], info.basis, info.ψ, info.occupation)
+        new_variables = merge(new_variables, 
+            (; hubbard_n=compute_hubbard_n(info.basis.terms[ihubbard], 
+                                        info.basis, info.ψ, info.occupation)))
     end
     # The potential needs to be updated at the end as it might need 'τ', 'hubbard_n', ...
-    if hasproperty(x, :V)
+    if hasproperty(x_in, :V)
         energies, new_ham = energy_hamiltonian(basis, info.ψ, info.occupation;
-                              eigenvalues=info.eigenvalues, εF=info.εF;
+                              eigenvalues=info.eigenvalues, εF=info.εF,
                               ρ=info.ρout, new_variables..., kwargs...)
-        new_variables[:V] = total_local_potential(new_ham)
+        new_variables = merge(new_variables, (; V=total_local_potential(new_ham)))
     end
 
     x_out = ScfVariables{NT}(new_variables)
@@ -282,7 +285,7 @@ function self_consistent_field(
     # applied to the exchange operator.
     (; ψ, occupation, eigenvalues, εF, converged) = info
     ρout = info.ρout
-    x_out = update_variables(x, info)
+    energies, x_out = update_variables(x, info, info.energies)
     energies, ham = energy_hamiltonian(basis, ψ, occupation; 
                                        exxalg=VanillaExx(),
                                        eigenvalues, εF, ρ=ρout, x_out...,
