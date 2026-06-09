@@ -157,25 +157,7 @@ function ScfVariables(basis::PlaneWaveBasis{T}, ρ) where {T}
     end
     ihubbard = findfirst(t -> t isa TermHubbard, basis.terms)
     if !isnothing(ihubbard)
-        data = merge(data, (; hubbard_n=initialize_hubbard_n(basis.terms[ihubbard], basis)))
+        data = merge(data, (; hubbard_n=compute_hubbard_n(basis.terms[ihubbard], basis, nothing, nothing)))
     end
     ScfVariables(; data...)
-end
-
-"""
-Initialize hubbard occupation matrix with zeros.
-"""
-function initialize_hubbard_n(manifold::ResolvedOrbitalManifold, basis::PlaneWaveBasis{T}) where {T}
-    n_spin = basis.model.n_spin_components
-    manifold_atoms = manifold.iatoms
-    natoms = length(manifold_atoms)
-    l = manifold.l
-    hubbard_n = Array{Matrix{Complex{T}}}([zeros(Complex{T}, 2*l+1, 2*l+1) for σ=1:n_spin, i=1:natoms, j=1:natoms])
-end
-
-"""
-Initialize hubbard occupation matrices with zeros.
-"""
-function initialize_hubbard_n(term::TermHubbard, basis::PlaneWaveBasis)
-    hubbard_n = [initialize_hubbard_n(manifold, basis) for manifold in term.manifolds]
 end

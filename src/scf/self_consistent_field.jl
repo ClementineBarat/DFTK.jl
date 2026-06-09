@@ -294,11 +294,12 @@ function self_consistent_field(
 
     # Callback is run one last time with final state to allow callback to clean up
     scfres = (; ham, basis, energies, converged, nbandsalg.occupation_threshold,
-                ρ=ρout, x_out..., α=damping, eigenvalues, occupation, εF,
-                info.n_bands_converge, info.n_iter, info.n_matvec, ψ, info.diagonalization,
-                stage=:finalize, info.history_Δρ, info.history_Etot, info.timedout, mixing,
-                is_converged, nbandsalg, fermialg, diagtolalg, solver, eigensolver,
-                seed, runtime_ns=time_ns() - start_ns, algorithm="SCF")
+                ρ=ρout, τ=nothing, hubbard_n=nothing,  x_out..., 
+                α=damping, eigenvalues, occupation, εF, info.n_bands_converge, info.n_iter, 
+                info.n_matvec, ψ, info.diagonalization, stage=:finalize, info.history_Δρ, 
+                info.history_Etot, info.timedout, mixing, is_converged, nbandsalg, fermialg,
+                diagtolalg, solver, eigensolver, seed, runtime_ns=time_ns() - start_ns, 
+                algorithm="SCF")
     callback(scfres)
     scfres
 end

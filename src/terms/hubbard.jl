@@ -231,6 +231,17 @@ function compute_hubbard_n(term::TermHubbard, basis::PlaneWaveBasis, ψ, occupat
      for (manifold, P, labels) in zip(term.manifolds, term.P, term.labels)]
 end
 
+# Initialize hubbard_n with zeros
+function compute_hubbard_n(manifold::ResolvedOrbitalManifold,
+                           projectors, labels,
+                           basis::PlaneWaveBasis{T},
+                           ψ::Nothing, occupation::Nothing) where {T}
+    n_spin = basis.model.n_spin_components
+    natoms = length(manifold.iatoms)
+    l = manifold.l
+    hubbard_n = Array{Matrix{Complex{T}}}([zeros(Complex{T}, 2*l+1, 2*l+1) for σ=1:n_spin, i=1:natoms, j=1:natoms])
+end
+
 """
 This function reshapes for each kpoint the projectors matrix to a vector of matrices,
 taking only the columns corresponding to orbitals in the manifold and splitting them
