@@ -45,44 +45,40 @@ function kwargs_scf_checkpoints(basis::AbstractBasis;
     (; callback, diagtolalg, ψ, ρ, τ, hubbard_n, occupation, kwargs...)
 end
 
-
 # Struct to store some options for forward-diff / reverse-diff response
 # (unused in primal calculations)
 @kwdef struct ResponseOptions
     verbose = true
 end
 
-function get_variable(k::Symbol, info)
-    if k == :ρ
-        return info.ρout
-    elseif k == :V
-        new_ham = Hamiltonian(basis; info.ψ, info.occupation, ρ=info.ρout,
-                              eigenvalues=info.eigenvalues, εF=info.εF)
-        # Energy is silently discarded here ... not ideal
-        return total_local_potential(new_ham)
-    elseif k == :τ
-        return compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
-    elseif k == :hubbard_n
-        ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
-        if isnothing(ihubbard)
-            return nothing
-        else
-            return compute_hubbard_n(info.basis.terms[ihubbard], info.basis, info.ψ, 
-                                 info.occupation)
-        end
-    else
-        error("Unknown SCF variable $k")
+"""
+Update the SCF variables (based on their names) from the information gathered in `info`.
+"""
+function update_variables(x_in::ScfVariables{NT}, info, energies; kwargs...) where {NT}
+    
+    new_variables = Dict{Symbol}()
+    if hasproperty(x, :ρ)
+        new_variables[:ρ] = info.ρout
     end
-end
+    if hasproperty(x, :τ)
+        new_variables[:τ] = compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
+    end
+    if hasproperty(x, :hubbard_n)
+        ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
+        @assert !isnothing(ihubbard)
+        new_variables[:hubbard_n] = compute_hubbard_n(info.basis.terms[ihubbard], info.basis, info.ψ, info.occupation)
+    end
+    # The potential needs to be updated at the end as it might need 'τ', 'hubbard_n', ...
+    if hasproperty(x, :V)
+        energies, new_ham = energy_hamiltonian(basis, info.ψ, info.occupation;
+                              eigenvalues=info.eigenvalues, εF=info.εF;
+                              ρ=info.ρout, new_variables..., kwargs...)
+        new_variables[:V] = total_local_potential(new_ham)
+    end
 
-"""
-Update the SCF variables (based on their names) from the information gathered in `info_next`.
-"""
-function update_variables(x_in::ScfVariables{NT}, info_next) where {NT}
-    x_out = ScfVariables{NT}(NamedTuple(
-        k => get_variable(k, info_next)
-        for k in propertynames(x_in)
-    ))
+    x_out = ScfVariables{NT}(new_variables)
+    return energies, x_out
+
 end
 
 """
@@ -235,7 +231,7 @@ function self_consistent_field(
         end
         
         # Update the SCF variables with info_next
-        x_out = update_variables(x_in, info_next)
+        energies, x_out = update_variables(x_in, info_next, energies; nbandsalg.occupation_threshold)
         Δx = x_out - x_in
 
         # Update the history in info_next

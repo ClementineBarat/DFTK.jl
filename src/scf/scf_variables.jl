@@ -4,6 +4,7 @@ struct ScfVariables{NT<:NamedTuple}
     data::NT
 end
 ScfVariables(; kwargs...) = ScfVariables((; kwargs...))
+ScfVariables(data::Dict{Symbol}) = ScfVariables(NamedTuple(data))
 
 Base.eltype(x::ScfVariables) = eltype(typeof(flatten(x)))
 Base.getproperty(x::ScfVariables, s::Symbol) =
@@ -157,7 +158,8 @@ function ScfVariables(basis::PlaneWaveBasis{T}, ρ) where {T}
     end
     ihubbard = findfirst(t -> t isa TermHubbard, basis.terms)
     if !isnothing(ihubbard)
-        data = merge(data, (; hubbard_n=compute_hubbard_n(basis.terms[ihubbard], basis, nothing, nothing)))
+        data = merge(data, (; hubbard_n=compute_hubbard_n(basis.terms[ihubbard], basis, 
+                                                          nothing, nothing)))
     end
     ScfVariables(; data...)
 end
