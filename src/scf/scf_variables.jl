@@ -1,10 +1,11 @@
 # Abstract type for elements (ρ or V, τ, hubbard_n, ...) to converge in the SCF.
 
-struct ScfVariables{NT<:NamedTuple}
-    data::NT
+@kwdef struct ScfVariables
+    ρ = nothing
+    V = nothing
+    τ = nothing
+    hubbard_n = nothing
 end
-ScfVariables(; kwargs...) = ScfVariables((; kwargs...))
-ScfVariables(data::Dict{Symbol}) = ScfVariables(NamedTuple(data))
 
 Base.eltype(x::ScfVariables) = eltype(typeof(flatten(x)))
 Base.getproperty(x::ScfVariables, s::Symbol) =
@@ -121,45 +122,45 @@ end
 
 # Adapting mixing functions to ScfVariables
 
-mix_default(mixing, basis, Δx; kwargs...) = Δx
 # Default fallbacks
+mix_default(mixing, basis, Δx; kwargs...) = Δx
 mix_density(mixing, basis, Δx; kwargs...) = Δx
 mix_potential(mixing, basis, Δx; kwargs...) = Δx
 mix_hubbard_n(mixing, basis, Δx; kwargs...) = Δx
-function get_mix_function(s::Symbol)
-    if s == :ρ
-        return mix_density
-    elseif s == :V
-        return mix_potential
-    elseif s == :hubbard_n
-        return mix_hubbard_n
-    else
-        return mix_default
-    end
-end
 
 """
 Apply mixing scheme to the ScfVariables object.
 """
 function mix_variables(mixing, basis, Δx::ScfVariables{NT}; kwargs...) where {NT}
-    ScfVariables{NT}(NamedTuple(
-        k => get_mix_function(k)(mixing, basis, getproperty(Δx, k);  kwargs...)
-        for k in propertynames(Δx)
-    ))
+    ScfVariables(;
+        ρ = mix_density(mixing, basis, Δx.ρ, kwargs...),
+        V = mix_potential(mixing, basis, Δx.V, kwargs...),
+        τ = mix_default(mixing, basis, Δx.τ, kwargs...),
+        hubbard_n = mix_hubbard_n(mixing, basis, Δx.hubbard_n, kwargs...),
+    )
 end
 
 """
 Construct an appropriate ScfVariables object from a basis and guess density (SCF on density).
 """
-function ScfVariables(basis::PlaneWaveBasis{T}, ρ) where {T}
-    data = (; ρ)
+function ScfVariables(basis::PlaneWaveBasis{T}, ρ; scf_on=:density, ham=nothing) where {T}
+    V = nothing
+    τ = nothing
+    hubbard_n = nothing
     if any(needs_τ, basis.terms)
-        data = merge(data, (; τ=zero(ρ)))
+        τ=zero(ρ)
     end
     ihubbard = findfirst(t -> t isa TermHubbard, basis.terms)
     if !isnothing(ihubbard)
-        data = merge(data, (; hubbard_n=compute_hubbard_n(basis.terms[ihubbard], basis, 
-                                                          nothing, nothing)))
+        hubbard_n=compute_hubbard_n(basis.terms[ihubbard], basis, nothing, nothing)
     end
-    ScfVariables(; data...)
+    if scf_on == :density
+        return ScfVariables(; ρ, τ, hubbard_n)
+    else
+        if isnothing(ham)
+            _, ham = energy_hamiltonian(basis, nothing, nothing; ρ)
+        end
+        V = total_local_potential(ham)
+        return ScfVariables(; V, τ, hubbard_n)
+    end
 end

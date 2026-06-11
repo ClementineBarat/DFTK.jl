@@ -51,35 +51,49 @@ end
     verbose = true
 end
 
+compute_τ(info) = compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
+function compute_hubbard_n(info)
+    ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
+    if isnothing(ihubbard)
+        return nothing
+    else
+        return compute_hubbard_n(info.basis.terms[ihubbard], info.basis, 
+                                 info.ψ, info.occupation)
+    end
+end
+
 """
 Update the SCF variables (based on their names) from the information gathered in `info`.
 """
-function update_variables(x_in::ScfVariables{NT}, info, energies; kwargs...) where {NT}
+function update_energies_variables(energies, x_in::ScfVariables, info; compute_consistent_energies=false, kwargs...)
     
-    new_variables = (;)
-    if hasproperty(x_in, :ρ)
-        new_variables = merge(new_variables, (; ρ=info.ρout))
+    ρ = nothing
+    V = nothing
+    τ = nothing
+    hubbard_n = nothing
+
+    if !isnothing(x_in.ρ)
+        ρ = info.ρout
     end
-    if hasproperty(x_in, :τ)
-        new_variables = merge(new_variables, 
-            (; τ=compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)))
+    if !isnothing(x_in.τ)
+        τ = compute_τ(info)
     end
-    if hasproperty(x_in, :hubbard_n)
-        ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
-        @assert !isnothing(ihubbard)
-        new_variables = merge(new_variables, 
-            (; hubbard_n=compute_hubbard_n(info.basis.terms[ihubbard], 
-                                        info.basis, info.ψ, info.occupation)))
+    if !isnothing(x_in.hubbard_n)
+        hubbard_n = compute_hubbard_n(info)
     end
     # The potential needs to be updated at the end as it might need 'τ', 'hubbard_n', ...
-    if hasproperty(x_in, :V)
+    if !isnothing(x_in.V)
         energies, new_ham = energy_hamiltonian(basis, info.ψ, info.occupation;
                               eigenvalues=info.eigenvalues, εF=info.εF,
-                              ρ=info.ρout, new_variables..., kwargs...)
-        new_variables = merge(new_variables, (; V=total_local_potential(new_ham)))
+                              ρ=info.ρout, τ, hubbard_n, kwargs...)
+        V = total_local_potential(new_ham)
+    elseif compute_consistent_energies
+        (; energies) = energy(basis, info.ψ, info.occupation; 
+                              ρ=info.ρout, τ, hubbard_n, info_next.eigenvalues, 
+                              info_next.εF, nbandsalg.occupation_threshold)
     end
 
-    x_out = ScfVariables{NT}(new_variables)
+    x_out = ScfVariables(; ρ, V, τ, hubbard_n)
     return energies, x_out
 
 end
@@ -89,13 +103,13 @@ Update the new Hamiltonian `ham`, either from the density (SCF on the density)
 or from the potential (SCF on the potential).
 """
 function update_ham(basis, info, x::ScfVariables; kwargs...)
-    if hasproperty(x, :ρ)
+    if !isnothing(x.ρ)  # SCF on density
         energies, ham = energy_hamiltonian(basis, info.ψ, info.occupation;
                                            info.eigenvalues, info.εF, x..., kwargs...)
         return energies, ham
-    elseif hasproperty(x, :V)
+    elseif !isnothing(x.V)  # SCF on potential
         ham = hamiltonian_with_total_potential(info.ham, x.V)
-        return info.energies, ham
+        return nothing, ham
     end
 end
 
@@ -170,6 +184,8 @@ Overview of parameters:
   Typical mixings are [`LdosMixing`](@ref), [`KerkerMixing`](@ref), [`SimpleMixing`](@ref)
   or [`DielectricMixing`](@ref). Default is `LdosMixing()`
 - `damping`: Damping parameter ``α`` in the above equation. Default is `0.8`.
+- `solver`: Fixed-point solver, the default is `scf_anderson_solver()`.
+- `scf_on`: Chooses wether the SCF is done on the density (`:density`) or on the potential (`:potential`). Default is `:density`.
 - `nbandsalg`: By default DFTK uses `nbandsalg=AdaptiveBands(model)`, which adaptively determines
   the number of bands to compute. If you want to influence this algorithm or use a predefined
   number of bands in each SCF step, pass a [`FixedBands`](@ref) or [`AdaptiveBands`](@ref).
@@ -182,7 +198,6 @@ Overview of parameters:
 function self_consistent_field(
     basis::PlaneWaveBasis{T};
     ρ=guess_density(basis),
-    x::ScfVariables=ScfVariables(basis, ρ),
     ψ=nothing,
     occupation=nothing,
     eigenvalues=nothing,
@@ -194,6 +209,7 @@ function self_consistent_field(
     mixing=LdosMixing(),
     damping=0.8,
     solver=scf_anderson_solver(),
+    scf_on=:density,    # TODO: name
     eigensolver=lobpcg_hyper,
     diagtolalg=default_diagtolalg(basis; tol),
     nbandsalg::NbandsAlgorithm=AdaptiveBands(basis.model),
@@ -227,28 +243,22 @@ function self_consistent_field(
         # Update info with results gathered so far
         info_next = (; ham, basis, stage=:iterate, algorithm="SCF",
                        α=damping, n_iter, nbandsalg.occupation_threshold,
-                       seed, runtime_ns=time_ns() - start_ns, nextstate...,
+                       seed, runtime_ns=time_ns() - start_ns, ρin=x_in.ρ, nextstate...,
                        diagonalization=[nextstate.diagonalization])
-        if hasproperty(x_in, :ρ)    # ρin needed for mixing
-            info_next = merge(info_next, (; ρin=x_in.ρ))
-        end
         
-        # Update the SCF variables with info_next
-        energies, x_out = update_variables(x_in, info_next, energies; nbandsalg.occupation_threshold)
+        # Update the energies and the SCF variables with info_next
+        energies, x_out = update_energies_variables(energies, x_in, info; 
+                                                    compute_consistent_energies, 
+                                                    nbandsalg.occupation_threshold)
         Δx = x_out - x_in
 
         # Update the history in info_next
-        if compute_consistent_energies  # Compute the energy of the new state
-            (; energies) = energy(basis, info_next.ψ, info_next.occupation; 
-                                  x_out..., ρ=info_next.ρout, info_next.eigenvalues, 
-                                  info_next.εF, nbandsalg.occupation_threshold)
-        end
         history_Etot = vcat(info.history_Etot, energies.total)
         history_Δρ = info.history_Δρ
-        if hasproperty(x_in, :ρ)
-            history_Δρ = vcat(history_Δρ, norm(Δx.ρ) * sqrt(basis.dvol))
-        else
+        if isnothing(x_in.ρ)
             history_Δρ = vcat(history_Δρ, norm(info_next.ρout - info.ρout) * sqrt(basis.dvol))
+        else
+            history_Δρ = vcat(history_Δρ, norm(Δx.ρ) * sqrt(basis.dvol))
         end
         n_matvec = info.n_matvec + nextstate.n_matvec
         info_next = merge(info_next, (; energies, history_Etot, n_matvec, history_Δρ))
@@ -277,6 +287,7 @@ function self_consistent_field(
                    history_Etot=T[], history_Δρ=T[])
 
     # Convergence is flagged by is_converged inside the fixpoint_map.
+    x = ScfVariables(basis, ρ; scf_on, ham)
     _, info = solver(fixpoint_map, x, info_init; maxiter)
 
     # We do not use the return value of solver but rather the one that got updated by fixpoint_map.
@@ -284,21 +295,21 @@ function self_consistent_field(
     # to return a correct variational energy and to build a Hamiltonian without any compression
     # applied to the exchange operator.
     (; ψ, occupation, eigenvalues, εF, converged) = info
-    ρout = info.ρout
-    energies, x_out = update_variables(x, info, info.energies)
+    ρ = info.ρout
+    τ = compute_τ(info)
+    hubbard_n = compute_hubbard_n(info)
     energies, ham = energy_hamiltonian(basis, ψ, occupation; 
                                        exxalg=VanillaExx(),
-                                       eigenvalues, εF, ρ=ρout, x_out...,
+                                       eigenvalues, εF, ρ, τ, hubbard_n,
                                        nbandsalg.occupation_threshold)
 
     # Callback is run one last time with final state to allow callback to clean up
     scfres = (; ham, basis, energies, converged, nbandsalg.occupation_threshold,
-                ρ=ρout, τ=nothing, hubbard_n=nothing,  x_out..., 
-                α=damping, eigenvalues, occupation, εF, info.n_bands_converge, info.n_iter, 
-                info.n_matvec, ψ, info.diagonalization, stage=:finalize, info.history_Δρ, 
-                info.history_Etot, info.timedout, mixing, is_converged, nbandsalg, fermialg,
-                diagtolalg, solver, eigensolver, seed, runtime_ns=time_ns() - start_ns, 
-                algorithm="SCF")
+                ρ, τ, hubbard_n, α=damping, eigenvalues, occupation, εF,
+                info.n_bands_converge, info.n_iter, info.n_matvec, ψ, info.diagonalization, 
+                stage=:finalize, info.history_Δρ, info.history_Etot, info.timedout, mixing, 
+                is_converged, nbandsalg, fermialg, diagtolalg, solver, eigensolver, seed, 
+                runtime_ns=time_ns() - start_ns, algorithm="SCF")
     callback(scfres)
     scfres
 end
