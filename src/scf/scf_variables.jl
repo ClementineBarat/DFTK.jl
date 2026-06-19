@@ -114,7 +114,7 @@ mix_hubbard_n(mixing, basis, Δx; kwargs...) = Δx
 """
 Apply mixing scheme to the ScfVariables object.
 """
-function mix_variables(mixing, basis, Δx::ScfVariables{NT}; kwargs...) where {NT}
+function mix_variables(mixing, basis, Δx::ScfVariables; kwargs...)
     ScfVariables(;
         ρ = mix_density(mixing, basis, Δx.ρ, kwargs...),
         V = mix_potential(mixing, basis, Δx.V, kwargs...),
