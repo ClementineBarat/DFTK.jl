@@ -185,7 +185,8 @@ Overview of parameters:
   or [`DielectricMixing`](@ref). Default is `LdosMixing()`
 - `damping`: Damping parameter ``α`` in the above equation. Default is `0.8`.
 - `solver`: Fixed-point solver, the default is `scf_anderson_solver()`.
-- `scf_on`: Chooses wether the SCF is done on the density (`:density`) or on the potential (`:potential`). Default is `:density`.
+- `iterate_on`: Chooses wether the SCF is done on the density (`:density`) 
+                or on the potential (`:potential`). Default is `:density`.
 - `nbandsalg`: By default DFTK uses `nbandsalg=AdaptiveBands(model)`, which adaptively determines
   the number of bands to compute. If you want to influence this algorithm or use a predefined
   number of bands in each SCF step, pass a [`FixedBands`](@ref) or [`AdaptiveBands`](@ref).
@@ -209,7 +210,7 @@ function self_consistent_field(
     mixing=LdosMixing(),
     damping=0.8,
     solver=scf_anderson_solver(),
-    scf_on=:density,    # TODO: name
+    iterate_on=:density,
     eigensolver=lobpcg_hyper,
     diagtolalg=default_diagtolalg(basis; tol),
     nbandsalg::NbandsAlgorithm=AdaptiveBands(basis.model),
@@ -247,7 +248,7 @@ function self_consistent_field(
                        diagonalization=[nextstate.diagonalization])
         
         # Update the energies and the SCF variables with info_next
-        energies, x_out = update_energies_variables(energies, x_in, info; 
+        energies, x_out = update_energies_variables(energies, x_in, info_next; 
                                                     compute_consistent_energies, 
                                                     nbandsalg.occupation_threshold)
         Δx = x_out - x_in
@@ -287,7 +288,7 @@ function self_consistent_field(
                    history_Etot=T[], history_Δρ=T[])
 
     # Convergence is flagged by is_converged inside the fixpoint_map.
-    x = ScfVariables(basis, ρ; scf_on, ham)
+    x = ScfVariables(basis, ρ; iterate_on, ham)
     _, info = solver(fixpoint_map, x, info_init; maxiter)
 
     # We do not use the return value of solver but rather the one that got updated by fixpoint_map.

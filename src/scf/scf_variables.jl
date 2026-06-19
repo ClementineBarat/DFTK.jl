@@ -7,111 +7,94 @@
     hubbard_n = nothing
 end
 
+"""Return the field names whose value is not `nothing`."""
+active_fields(x::ScfVariables) = filter(k -> !isnothing(getfield(x, k)), fieldnames(ScfVariables))
+
 Base.eltype(x::ScfVariables) = eltype(typeof(flatten(x)))
-Base.getproperty(x::ScfVariables, s::Symbol) =
-    s === :data ? getfield(x, :data) : getproperty(x.data, s)
 
-Base.propertynames(x::ScfVariables) = propertynames(x.data)
-Base.iterate(x::ScfVariables) = iterate(pairs(x.data))
-Base.iterate(x::ScfVariables, i) = iterate(pairs(x.data), i)
+"""
+    mapfields(f, x)  /  mapfields(f, x, y)
 
-# Defining field-wise elementary operations on ScfVariables.
-
-function stable_mapfields(f, x::ScfVariables{NT}) where {NT}    # Same dimension
-    ScfVariables{NT}(NamedTuple(
-        k => f(getproperty(x, k))
-        for k in propertynames(x)
-    ))
-end
-
-function stable_mapfields(f, x::ScfVariables{NT}, y::ScfVariables{NT}) where {NT}
-    ScfVariables{NT}(NamedTuple(
-        k => f(getproperty(x, k), getproperty(y, k))
-        for k in propertynames(x)
-    ))
-end
-
+Apply `f` field-by-field, skipping `nothing` fields (they stay `nothing`).
+The two-argument form requires both arguments to share the same active fields.
+"""
 function mapfields(f, x::ScfVariables)
-    ScfVariables(NamedTuple(
-        k => f(getproperty(x, k))
-        for k in propertynames(x)
-    ))
+    ScfVariables(; (k => f(getfield(x, k)) for k in active_fields(x))...)
 end
 
 function mapfields(f, x::ScfVariables, y::ScfVariables)
-    ScfVariables(NamedTuple(
-        k => f(getproperty(x, k), getproperty(y, k))
-        for k in propertynames(x)
-    ))
+    kx, ky = active_fields(x), active_fields(y)
+    @assert kx == ky "ScfVariables operands have different active fields: $kx vs $ky"
+    ScfVariables(; (k => f(getfield(x, k), getfield(y, k)) for k in kx)...)
 end
 
-Base.:+(x::ScfVariables, y::ScfVariables) = stable_mapfields(+, x, y)
-Base.:-(x::ScfVariables, y::ScfVariables) = stable_mapfields(-, x, y)
-Base.:*(α::Number, x::ScfVariables) = stable_mapfields(v -> α * v, x)
-Base.:/(x::ScfVariables, α::Number) = stable_mapfields(v -> v / α, x)
-Base.:-(x::ScfVariables) = stable_mapfields(-, x)
-Base.broadcastable(x::ScfVariables) = Ref(x)
+Base.:+(x::ScfVariables, y::ScfVariables)  = mapfields(+, x, y)
+Base.:-(x::ScfVariables, y::ScfVariables)  = mapfields(-, x, y)
+Base.:*(α::Number,        x::ScfVariables) = mapfields(v -> α*v, x)
+Base.:/(x::ScfVariables,  α::Number)       = mapfields(v -> v/α, x)
+Base.:-(x::ScfVariables)                   = mapfields(-, x)
+Base.broadcastable(x::ScfVariables)        = Ref(x)
 
-LinearAlgebra.dot(x::ScfVariables, y::ScfVariables) = mapfields(dot, x, y)
-LinearAlgebra.norm(x::ScfVariables) = mapfields(norm, x)
-Base.size(x::ScfVariables) = mapfields(size, x)
+LinearAlgebra.dot(x::ScfVariables,  y::ScfVariables) = mapfields(dot, x, y)
+LinearAlgebra.norm(x::ScfVariables)                  = mapfields(norm, x)
+Base.size(x::ScfVariables)                           = mapfields(size, x)
 
 # Flattening and reconstructing ScfVariables structures to and from 1 dimensional vectors.
 
-flatten(x::Nothing) = []
-function _reconstruct(::Nothing, v, i)
-    return nothing, i
+# Leaf types
+flatten(::Nothing)                      = Float64[]
+flatten(x::Real)                        = [x]
+flatten(x::Complex)                     = [real(x), imag(x)]
+flatten(x::AbstractArray)               = reduce(vcat, flatten.(x))
+flatten(x::Tuple)                       = reduce(vcat, flatten.(x))
+flatten(x::NamedTuple)                  = reduce(vcat, flatten.(values(x)))
+
+"""Flatten only the active (non-nothing) fields into a single Vector."""
+function flatten(x::ScfVariables)
+    isempty(active_fields(x)) && return Float64[]
+    reduce(vcat, (flatten(getfield(x, k)) for k in active_fields(x)))
 end
-flatten(x::Real) = [x]
-function _reconstruct(::T, v, i) where {T<:Real}
-    return T(v[i]), i + 1
-end
-flatten(x::Complex) = [real(x), imag(x)]
+
+# Reconstruct leaf types
+_reconstruct(::Nothing, v, i)              = nothing, i
+_reconstruct(::T, v, i) where {T<:Real}    = T(v[i]), i+1
 function _reconstruct(::T, v, i) where {T<:Complex}
-    x = T(v[i] + v[i+1] * im)
-    return x, i + 2
+    x = T(v[i] + v[i+1]*im)
+    return x, i+2
 end
-flatten(x::AbstractArray) = reduce(vcat, flatten.(x))   # reduce(vcat, ) not optimal numerically TODO
 function _reconstruct(template::AbstractArray{T,N}, v, i) where {T,N}
-    n = length(template)
-
+    n    = length(template)
     data = Vector{T}(undef, n)
-
     for j = 1:n
         data[j], i = _reconstruct(template[j], v, i)
     end
-
     return reshape(data, size(template)), i
 end
-flatten(x::Tuple) = reduce(vcat, flatten.(x))
 function _reconstruct(template::Tuple, v, i)
     vals = ()
-
     for x in template
-        y, i = _reconstruct(x, v, i)
-        vals = (vals..., y)
+        y, i  = _reconstruct(x, v, i)
+        vals  = (vals..., y)
     end
-
     return vals, i
 end
-flatten(x::NamedTuple) = reduce(vcat, flatten(values(x)))
 function _reconstruct(template::NamedTuple, v, i)
-    vals = NamedTuple()
-
-    data = NamedTuple(
-        k => begin
-            y, i = _reconstruct(getfield(template, k), v, i)
-            y
-        end
-        for k in keys(template)
-    )
-
-    return data, i
+    pairs = map(keys(template)) do k
+        y, i = _reconstruct(template[k], v, i)
+        k => y
+    end
+    return NamedTuple(pairs), i
 end
-flatten(x::ScfVariables) = flatten(x.data)
+
+"""Reconstruct a ScfVariables from a flat vector, using `template` for shapes."""
 function _reconstruct(template::ScfVariables, v, i)
-    data, i = _reconstruct(template.data, v, i)
-    return ScfVariables(data), i
+    fields = fieldnames(ScfVariables)
+    kwargs = map(fields) do k
+        val   = getfield(template, k)
+        y, i  = _reconstruct(val, v, i)   # nothing → nothing, skips indices
+        k => y
+    end
+    return ScfVariables(; kwargs...), i
 end
 
 function reconstruct(template, v::AbstractVector)
@@ -143,7 +126,7 @@ end
 """
 Construct an appropriate ScfVariables object from a basis and guess density (SCF on density).
 """
-function ScfVariables(basis::PlaneWaveBasis{T}, ρ; scf_on=:density, ham=nothing) where {T}
+function ScfVariables(basis::PlaneWaveBasis{T}, ρ; iterate_on=:density, ham=nothing) where {T}
     V = nothing
     τ = nothing
     hubbard_n = nothing
@@ -154,7 +137,7 @@ function ScfVariables(basis::PlaneWaveBasis{T}, ρ; scf_on=:density, ham=nothing
     if !isnothing(ihubbard)
         hubbard_n=compute_hubbard_n(basis.terms[ihubbard], basis, nothing, nothing)
     end
-    if scf_on == :density
+    if iterate_on == :density
         return ScfVariables(; ρ, τ, hubbard_n)
     else
         if isnothing(ham)
