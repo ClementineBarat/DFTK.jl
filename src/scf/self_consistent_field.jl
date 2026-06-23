@@ -63,7 +63,8 @@ function compute_hubbard_n(info)
 end
 
 """
-Update the SCF variables (based on their names) from the information gathered in `info`.
+Update the energy and the SCF variables (based on their names) 
+from the information gathered in `info`.
 """
 function update_energies_variables(energies, x_in::ScfVariables, info; compute_consistent_energies=false, kwargs...)
     
@@ -83,14 +84,14 @@ function update_energies_variables(energies, x_in::ScfVariables, info; compute_c
     end
     # The potential needs to be updated at the end as it might need 'τ', 'hubbard_n', ...
     if !isnothing(x_in.V)
-        energies, new_ham = energy_hamiltonian(basis, info.ψ, info.occupation;
+        energies, new_ham = energy_hamiltonian(info.basis, info.ψ, info.occupation;
                               eigenvalues=info.eigenvalues, εF=info.εF,
                               ρ=info.ρout, τ, hubbard_n, kwargs...)
         V = total_local_potential(new_ham)
     elseif compute_consistent_energies
-        (; energies) = energy(basis, info.ψ, info.occupation; 
-                              ρ=info.ρout, τ, hubbard_n, info_next.eigenvalues, 
-                              info_next.εF, nbandsalg.occupation_threshold)
+        (; energies) = energy(info.basis, info.ψ, info.occupation; 
+                              ρ=info.ρout, τ, hubbard_n, info.eigenvalues, 
+                              info.εF, kwargs...)
     end
 
     x_out = ScfVariables(; ρ, V, τ, hubbard_n)
@@ -282,7 +283,7 @@ function self_consistent_field(
     # Note: it is assumed that, upon entry, the input density ρ is numerically identical
     #       across all MPI ranks. If not, unexpected behavior may occur. It is the caller's
     #       responsibility to ensure this is the case.
-    energies, ham = energy_hamiltonian(basis, nothing, nothing; ρ)
+    energies, ham = energy_hamiltonian(basis, nothing, nothing; ρ, τ=zero(ρ))
     info_init = (; ham, energies, ρin=ρ, ρout=ρ, ψ, occupation, eigenvalues, εF=nothing,
                    n_iter=0, n_matvec=0, timedout=false, converged=false,
                    history_Etot=T[], history_Δρ=T[])

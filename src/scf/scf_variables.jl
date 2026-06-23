@@ -11,6 +11,8 @@ end
 active_fields(x::ScfVariables) = filter(k -> !isnothing(getfield(x, k)), fieldnames(ScfVariables))
 
 Base.eltype(x::ScfVariables) = eltype(typeof(flatten(x)))
+Base.iterate(x::ScfVariables) = iterate(((k, getfield(x, k)) for k in fieldnames(ScfVariables)))
+Base.iterate(x::ScfVariables, i) = iterate(((k, getfield(x, k)) for k in fieldnames(ScfVariables)), i)
 
 """
     mapfields(f, x)  /  mapfields(f, x, y)
@@ -116,10 +118,10 @@ Apply mixing scheme to the ScfVariables object.
 """
 function mix_variables(mixing, basis, Δx::ScfVariables; kwargs...)
     ScfVariables(;
-        ρ = mix_density(mixing, basis, Δx.ρ, kwargs...),
-        V = mix_potential(mixing, basis, Δx.V, kwargs...),
-        τ = mix_default(mixing, basis, Δx.τ, kwargs...),
-        hubbard_n = mix_hubbard_n(mixing, basis, Δx.hubbard_n, kwargs...),
+        ρ = mix_density(mixing, basis, Δx.ρ; kwargs...),
+        V = mix_potential(mixing, basis, Δx.V; kwargs...),
+        τ = mix_default(mixing, basis, Δx.τ; kwargs...),
+        hubbard_n = mix_hubbard_n(mixing, basis, Δx.hubbard_n; kwargs...),
     )
 end
 
@@ -141,7 +143,7 @@ function ScfVariables(basis::PlaneWaveBasis{T}, ρ; iterate_on=:density, ham=not
         return ScfVariables(; ρ, τ, hubbard_n)
     else
         if isnothing(ham)
-            _, ham = energy_hamiltonian(basis, nothing, nothing; ρ)
+            _, ham = energy_hamiltonian(basis, nothing, nothing; ρ, τ)
         end
         V = total_local_potential(ham)
         return ScfVariables(; V, τ, hubbard_n)
