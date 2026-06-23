@@ -15,7 +15,7 @@ function kwargs_scf_checkpoints(basis::AbstractBasis;
                                 callback=ScfDefaultCallback(),
                                 diagtolalg::AdaptiveDiagtol=AdaptiveDiagtol(),
                                 ρ=guess_density(basis),
-                                τ=any(needs_τ, basis.terms) ? zero(ρ) : nothing,
+                                τ=guess_kinetic_energy_density(basis, ρ),
                                 hubbard_n=nothing, ψ=nothing, occupation=nothing,
                                 save_ψ=false, kwargs...)
     if isfile(filename)
@@ -45,10 +45,95 @@ function kwargs_scf_checkpoints(basis::AbstractBasis;
     (; callback, diagtolalg, ψ, ρ, τ, hubbard_n, occupation, kwargs...)
 end
 
-# Struct to store some options for forward-diff / reverse-diff response
-# (unused in primal calculations)
+
+"""
+Options to pass to the response solver function such as `solve_ΩplusK_split`.
+
+## Keyword arguments
+- `verbose::Bool` (default: `true`): Be more verbose and display progress
+- `tol::Float64` (default: `last(scfres.history_Δρ)`: The global tolerance
+  to which to solve the response problem.
+- `krylovdim::Int` (default: `20`): Default Krylov subspace dimension to use
+  in the inexact GMRES.
+- `maxiter::Int` (default: `100`): Maximal number of iterations to use in
+  the inexact GMRES.
+- `mixing::Mixing` (default: `scfres.mixing`): Mixing (preconditioning) to use in
+  the GMRES iterations.
+
+## Keyword arguments (Expert level)
+- `s::Int` (default: `100`): Initial guess for the smallest singular value
+  of the upper Hessenberg matrix in the ineact GMRES. Lowering this can sometimes
+  improve solver efficiency.
+"""
 @kwdef struct ResponseOptions
-    verbose = true
+    verbose::Bool = true
+    tol::Union{Nothing,Float64} = nothing
+    krylovdim::Int = 20
+    s::Float64 = 100.0
+    mixing::Union{Nothing,Mixing} = nothing
+end
+
+compute_τ(info) = compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
+function compute_hubbard_n(info)
+    ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
+    if isnothing(ihubbard)
+        return nothing
+    else
+        return compute_hubbard_n(info.basis.terms[ihubbard], info.basis, 
+                                 info.ψ, info.occupation)
+    end
+end
+
+"""
+Update the energy and the SCF variables (based on their names) 
+from the information gathered in `info`.
+"""
+function update_energies_variables(energies, x_in::ScfVariables, info; compute_consistent_energies=false, kwargs...)
+    
+    ρ = nothing
+    V = nothing
+    τ = nothing
+    hubbard_n = nothing
+
+    if !isnothing(x_in.ρ)
+        ρ = info.ρout
+    end
+    if !isnothing(x_in.τ)
+        τ = compute_τ(info)
+    end
+    if !isnothing(x_in.hubbard_n)
+        hubbard_n = compute_hubbard_n(info)
+    end
+    # The potential needs to be updated at the end as it might need 'τ', 'hubbard_n', ...
+    if !isnothing(x_in.V)
+        energies, new_ham = energy_hamiltonian(info.basis, info.ψ, info.occupation;
+                              eigenvalues=info.eigenvalues, εF=info.εF,
+                              ρ=info.ρout, τ, hubbard_n, kwargs...)
+        V = total_local_potential(new_ham)
+    elseif compute_consistent_energies
+        (; energies) = energy(info.basis, info.ψ, info.occupation; 
+                              ρ=info.ρout, τ, hubbard_n, info.eigenvalues, 
+                              info.εF, kwargs...)
+    end
+
+    x_out = ScfVariables(; ρ, V, τ, hubbard_n)
+    return energies, x_out
+
+end
+
+"""
+Update the new Hamiltonian `ham`, either from the density (SCF on the density) 
+or from the potential (SCF on the potential).
+"""
+function update_ham(basis, info, x::ScfVariables; kwargs...)
+    if !isnothing(x.ρ)  # SCF on density
+        energies, ham = energy_hamiltonian(basis, info.ψ, info.occupation;
+                                           info.eigenvalues, info.εF, x..., kwargs...)
+        return energies, ham
+    elseif !isnothing(x.V)  # SCF on potential
+        ham = hamiltonian_with_total_potential(info.ham, x.V)
+        return nothing, ham
+    end
 end
 
 compute_τ(info) = compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
@@ -150,15 +235,21 @@ function next_density(ham::Hamiltonian,
     # TODO This is a bit hackish, but needed right now as we increase the number of bands
     #      to be computed only between SCF steps. Should be revisited once we have a better
     #      way to deal with such things in LOBPCG.
-    if !increased_n_bands && minocc > nbandsalg.occupation_threshold
+    if !increased_n_bands && minocc > nbandsalg.occupation_threshold && mpi_master(ham.basis.comm_kpts)
         @warn("Detected large minimal occupation $minocc. SCF could be unstable. " *
               "Try switching to adaptive band selection (`nbandsalg=AdaptiveBands(model)`) " *
               "or request more converged bands than $n_bands_converge (e.g. " *
               "`nbandsalg=AdaptiveBands(model; n_bands_converge=$(n_bands_converge + 3)`)")
     end
 
-    ρout = compute_density(ham.basis, eigres.X, occupation; nbandsalg.occupation_threshold)
-    (; ψ=eigres.X, eigenvalues=eigres.λ, occupation, εF, ρout, diagonalization=eigres,
+    ρ = compute_density(ham.basis, eigres.X, occupation; nbandsalg.occupation_threshold)
+    if any(needs_τ, ham.basis.terms)
+        τ = compute_kinetic_energy_density(ham.basis, eigres.X, occupation)
+    else
+        τ = nothing
+    end
+
+    (; ψ=eigres.X, eigenvalues=eigres.λ, occupation, εF, ρ, τ, diagonalization=eigres,
      n_bands_converge, nbandsalg.occupation_threshold,
      n_matvec=mpi_sum(eigres.n_matvec, ham.basis.comm_kpts))
 end
@@ -234,6 +325,7 @@ function self_consistent_field(
 
         n_iter = info.n_iter
         n_iter += 1
+        (ρin, τin) = split_gdensity(basis, Din)
 
         # Define the new Hamiltonian
         energies, ham = update_ham(basis, info, x_in; nbandsalg.occupation_threshold)
@@ -286,7 +378,7 @@ function self_consistent_field(
     energies, ham = energy_hamiltonian(basis, nothing, nothing; ρ, τ=zero(ρ))
     info_init = (; ham, energies, ρin=ρ, ρout=ρ, ψ, occupation, eigenvalues, εF=nothing,
                    n_iter=0, n_matvec=0, timedout=false, converged=false,
-                   history_Etot=T[], history_Δρ=T[])
+                   history_Etot=T[], history_Δρ=T[], history_Δτ=T[])
 
     # Convergence is flagged by is_converged inside the fixpoint_map.
     x = ScfVariables(basis, ρ; iterate_on, ham)
