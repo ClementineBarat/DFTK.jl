@@ -38,7 +38,8 @@ function (cb::ScfDefaultCallback)(info)
     # If first iteration clear a potentially cached previous time
     info.n_iter ≤ 1 && (cb.prev_time[] = 0)
 
-    show_dtau = hasproperty(info, :history_Δτ) && !isnothing(info.τ)
+    show_dtau = !isempty(info.history_Δτ)
+    show_dpot = !isempty(info.history_ΔV)
     show_magn = info.basis.model.spin_polarization == :collinear && cb.show_magnetic_moments
     show_diag = hasproperty(info, :diagonalization)
     show_damp = hasproperty(info, :α) && cb.show_damping
@@ -70,15 +71,16 @@ function (cb::ScfDefaultCallback)(info)
     # TODO We should really do this properly ... this is really messy
     if info.n_iter == 1
         label_dtau = show_dtau   ? ("   log10(Δτ)",   "   ---------")   : ("", "")
+        label_dpot = show_dpot   ? ("   log10(ΔV)",   "   ---------")   : ("", "")
         label_magn = show_magn   ? ("   Magnet   |Magn|", "   ------   ------") : ("", "")
         label_damp = show_damp   ? ("   α   ",   "   ----")   : ("", "")
         label_diag = show_diag   ? ("   Diag",   "   ----")   : ("", "")
         label_time = show_time   ? ("   Δtime ",  "   ------") : ("", "")
         label_memo = show_memory ? ("   Memory",  "   ------") : ("", "")
         label_dmem = show_gpumem ? ("   GPUmem",  "   ------") : ("", "")
-        print("n     Energy            log10(ΔE)   log10(Δρ)", label_dtau[1], label_magn[1])
+        print("n     Energy            log10(ΔE)   log10(Δρ)", label_dtau[1], label_dpot[1], label_magn[1])
         println(label_damp[1], label_diag[1], label_time[1], label_memo[1], label_dmem[1])
-        print("---   ---------------   ---------   ---------", label_dtau[2], label_magn[2])
+        print("---   ---------------   ---------   ---------", label_dtau[2], label_dpot[2], label_magn[2])
         println(label_damp[2], label_diag[2], label_time[2], label_memo[2], label_dmem[2])
     end
     E    = isnothing(info.energies) ? Inf : info.energies.total
@@ -109,6 +111,7 @@ function (cb::ScfDefaultCallback)(info)
     end
     Δρstr   = " " * format_log8(last(info.history_Δρ))
     Δτstr   = show_dtau ? "    " * format_log8(last(info.history_Δτ)) : ""
+    ΔVstr   = show_dpot ? "    " * format_log8(last(info.history_ΔV)) : ""
     Mstr    = show_magn ? "   $((@sprintf "%6.3f" round(magn, sigdigits=4))[1:6])" : ""
     absMstr = show_magn ? "   $((@sprintf "%6.3f" round(abs_magn, sigdigits=4))[1:6])" : ""
     diagstr = show_diag ? "  $(@sprintf "% 5.1f" diagiter)" : ""
@@ -117,7 +120,7 @@ function (cb::ScfDefaultCallback)(info)
     show_damp && (αstr = isnan(info.α) ? "       " : @sprintf "  % 4.2f" info.α)
 
     @printf "% 3d   %s   %s   %s" info.n_iter Estr ΔE Δρstr
-    println(Δτstr, Mstr, absMstr, αstr, diagstr, tstr, memstr)
+    println(Δτstr, ΔVstr, Mstr, absMstr, αstr, diagstr, tstr, memstr)
 
     flush(stdout)
     info
@@ -154,6 +157,20 @@ struct ScfConvergenceDensity
     tolerance::Float64
 end
 (conv::ScfConvergenceDensity)(info) = last(info.history_Δρ) < conv.tolerance
+
+"""
+Flag convergence by using the L2Norm of the potential change in one SCF step.
+"""
+struct ScfConvergencePotential
+    tolerance::Float64
+end
+(conv::ScfConvergencePotential)(info) = last(info.history_ΔV) < conv.tolerance
+
+"""
+Get the appropriate convergence function depending on which quantity the SCF iterates on.
+"""
+ScfConvergence(iterate_on, tol) = iterate_on == :potential ? ScfConvergencePotential(tol) :
+                                                             ScfConvergenceDensity(tol)
 
 """
 Flag convergence on the change in Cartesian force between two iterations.

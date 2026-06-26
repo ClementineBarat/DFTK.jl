@@ -298,9 +298,9 @@ end
        response=getfield.(δresults, :info_gmres),
        scfres.converged, scfres.occupation_threshold, scfres.α, scfres.n_iter,
        scfres.n_bands_converge, scfres.n_matvec, scfres.diagonalization, scfres.stage,
-       scfres.history_Δρ, scfres.history_Δτ, scfres.history_Etot, scfres.timedout,
-       scfres.mixing, scfres.is_converged, scfres.nbandsalg, scfres.fermialg,
-       scfres.diagtolalg, scfres.solver, scfres.eigensolver,
+       scfres.history_Δρ, scfres.history_Δτ, scfres.history_ΔV, scfres.history_Etot, 
+       scfres.timedout, scfres.mixing, scfres.is_converged, scfres.nbandsalg, 
+       scfres.fermialg, scfres.diagtolalg, scfres.solver, scfres.eigensolver,
        scfres.seed, scfres.algorithm, scfres.runtime_ns)
 end
 

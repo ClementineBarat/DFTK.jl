@@ -45,7 +45,6 @@ function kwargs_scf_checkpoints(basis::AbstractBasis;
     (; callback, diagtolalg, ψ, ρ, τ, hubbard_n, occupation, kwargs...)
 end
 
-
 """
 Options to pass to the response solver function such as `solve_ΩplusK_split`.
 
@@ -85,10 +84,10 @@ function compute_hubbard_n(info)
 end
 
 """
-Update the energy and the SCF variables (based on their names) 
-from the information gathered in `info`.
+Update the energy and the SCF variables from the information gathered in `info`.
 """
-function update_energies_variables(energies, x_in::ScfVariables, info; compute_consistent_energies=false, kwargs...)
+function update_energies_variables(energies, x_in::ScfVariables, info; 
+                                   compute_consistent_energies=false, kwargs...)
     
     ρ = nothing
     V = nothing
@@ -96,7 +95,7 @@ function update_energies_variables(energies, x_in::ScfVariables, info; compute_c
     hubbard_n = nothing
 
     if !isnothing(x_in.ρ)
-        ρ = info.ρout
+        ρ = info.ρ
     end
     if !isnothing(x_in.τ)
         τ = compute_τ(info)
@@ -108,11 +107,11 @@ function update_energies_variables(energies, x_in::ScfVariables, info; compute_c
     if !isnothing(x_in.V)
         energies, new_ham = energy_hamiltonian(info.basis, info.ψ, info.occupation;
                               eigenvalues=info.eigenvalues, εF=info.εF,
-                              ρ=info.ρout, τ, hubbard_n, kwargs...)
+                              ρ=info.ρ, τ, hubbard_n, kwargs...)
         V = total_local_potential(new_ham)
     elseif compute_consistent_energies
         (; energies) = energy(info.basis, info.ψ, info.occupation; 
-                              ρ=info.ρout, τ, hubbard_n, info.eigenvalues, 
+                              ρ=info.ρ, τ, hubbard_n, info.eigenvalues, 
                               info.εF, kwargs...)
     end
 
@@ -126,70 +125,7 @@ Update the new Hamiltonian `ham`, either from the density (SCF on the density)
 or from the potential (SCF on the potential).
 """
 function update_ham(basis, info, x::ScfVariables; kwargs...)
-    if !isnothing(x.ρ)  # SCF on density
-        energies, ham = energy_hamiltonian(basis, info.ψ, info.occupation;
-                                           info.eigenvalues, info.εF, x..., kwargs...)
-        return energies, ham
-    elseif !isnothing(x.V)  # SCF on potential
-        ham = hamiltonian_with_total_potential(info.ham, x.V)
-        return nothing, ham
-    end
-end
-
-compute_τ(info) = compute_kinetic_energy_density(info.basis, info.ψ, info.occupation)
-function compute_hubbard_n(info)
-    ihubbard = findfirst(t -> t isa TermHubbard, info.basis.terms)
-    if isnothing(ihubbard)
-        return nothing
-    else
-        return compute_hubbard_n(info.basis.terms[ihubbard], info.basis, 
-                                 info.ψ, info.occupation)
-    end
-end
-
-"""
-Update the energy and the SCF variables (based on their names) 
-from the information gathered in `info`.
-"""
-function update_energies_variables(energies, x_in::ScfVariables, info; compute_consistent_energies=false, kwargs...)
-    
-    ρ = nothing
-    V = nothing
-    τ = nothing
-    hubbard_n = nothing
-
-    if !isnothing(x_in.ρ)
-        ρ = info.ρout
-    end
-    if !isnothing(x_in.τ)
-        τ = compute_τ(info)
-    end
-    if !isnothing(x_in.hubbard_n)
-        hubbard_n = compute_hubbard_n(info)
-    end
-    # The potential needs to be updated at the end as it might need 'τ', 'hubbard_n', ...
-    if !isnothing(x_in.V)
-        energies, new_ham = energy_hamiltonian(info.basis, info.ψ, info.occupation;
-                              eigenvalues=info.eigenvalues, εF=info.εF,
-                              ρ=info.ρout, τ, hubbard_n, kwargs...)
-        V = total_local_potential(new_ham)
-    elseif compute_consistent_energies
-        (; energies) = energy(info.basis, info.ψ, info.occupation; 
-                              ρ=info.ρout, τ, hubbard_n, info.eigenvalues, 
-                              info.εF, kwargs...)
-    end
-
-    x_out = ScfVariables(; ρ, V, τ, hubbard_n)
-    return energies, x_out
-
-end
-
-"""
-Update the new Hamiltonian `ham`, either from the density (SCF on the density) 
-or from the potential (SCF on the potential).
-"""
-function update_ham(basis, info, x::ScfVariables; kwargs...)
-    if !isnothing(x.ρ)  # SCF on density
+    if !isnothing(x.ρ)      # SCF on density
         energies, ham = energy_hamiltonian(basis, info.ψ, info.occupation;
                                            info.eigenvalues, info.εF, x..., kwargs...)
         return energies, ham
@@ -243,13 +179,8 @@ function next_density(ham::Hamiltonian,
     end
 
     ρ = compute_density(ham.basis, eigres.X, occupation; nbandsalg.occupation_threshold)
-    if any(needs_τ, ham.basis.terms)
-        τ = compute_kinetic_energy_density(ham.basis, eigres.X, occupation)
-    else
-        τ = nothing
-    end
 
-    (; ψ=eigres.X, eigenvalues=eigres.λ, occupation, εF, ρ, τ, diagonalization=eigres,
+    (; ψ=eigres.X, eigenvalues=eigres.λ, occupation, εF, ρ, diagonalization=eigres,
      n_bands_converge, nbandsalg.occupation_threshold,
      n_matvec=mpi_sum(eigres.n_matvec, ham.basis.comm_kpts))
 end
@@ -295,14 +226,14 @@ function self_consistent_field(
     occupation=nothing,
     eigenvalues=nothing,
     tol=1e-6,
-    is_converged=ScfConvergenceDensity(tol),
+    iterate_on=:density,
+    is_converged=ScfConvergence(iterate_on, tol),
     miniter=0,
     maxiter=100,
     maxtime=Year(1),
     mixing=LdosMixing(),
     damping=0.8,
     solver=scf_anderson_solver(),
-    iterate_on=:density,
     eigensolver=lobpcg_hyper,
     diagtolalg=default_diagtolalg(basis; tol),
     nbandsalg::NbandsAlgorithm=AdaptiveBands(basis.model),
@@ -325,7 +256,6 @@ function self_consistent_field(
 
         n_iter = info.n_iter
         n_iter += 1
-        (ρin, τin) = split_gdensity(basis, Din)
 
         # Define the new Hamiltonian
         energies, ham = update_ham(basis, info, x_in; nbandsalg.occupation_threshold)
@@ -348,14 +278,16 @@ function self_consistent_field(
 
         # Update the history in info_next
         history_Etot = vcat(info.history_Etot, energies.total)
-        history_Δρ = info.history_Δρ
-        if isnothing(x_in.ρ)
-            history_Δρ = vcat(history_Δρ, norm(info_next.ρout - info.ρout) * sqrt(basis.dvol))
-        else
-            history_Δρ = vcat(history_Δρ, norm(Δx.ρ) * sqrt(basis.dvol))
-        end
+        Δρ  = isnothing(Δx.ρ) ? norm(info_next.ρ - info.ρ) * sqrt(basis.dvol) :
+                                norm(Δx.ρ) * sqrt(basis.dvol)
+        history_Δρ  = vcat(info.history_Δτ,  Δρ)
+        history_ΔV  = isnothing(Δx.V) ? info.history_ΔV :
+                      vcat(info.history_ΔV,  norm(Δx.V)  * sqrt(basis.dvol))
+        history_Δτ  = isnothing(Δx.τ) ? info.history_Δτ :
+                      vcat(info.history_Δτ,  norm(Δx.τ)  * sqrt(basis.dvol))
         n_matvec = info.n_matvec + nextstate.n_matvec
-        info_next = merge(info_next, (; energies, history_Etot, n_matvec, history_Δρ))
+        info_next = merge(info_next, (; energies, history_Etot, n_matvec, 
+                                        history_Δρ, history_ΔV, history_Δτ))
 
         # Apply mixing to the SCF variables
         x_next = x_in .+ T(damping) .* mix_variables(mixing, basis, Δx; info_next...)
@@ -376,9 +308,9 @@ function self_consistent_field(
     #       across all MPI ranks. If not, unexpected behavior may occur. It is the caller's
     #       responsibility to ensure this is the case.
     energies, ham = energy_hamiltonian(basis, nothing, nothing; ρ, τ=zero(ρ))
-    info_init = (; ham, energies, ρin=ρ, ρout=ρ, ψ, occupation, eigenvalues, εF=nothing,
+    info_init = (; ham, energies, ρin=ρ, ρ, ψ, occupation, eigenvalues, εF=nothing,
                    n_iter=0, n_matvec=0, timedout=false, converged=false,
-                   history_Etot=T[], history_Δρ=T[], history_Δτ=T[])
+                   history_Etot=T[], history_Δρ=T[], history_Δτ=T[], history_ΔV=T[])
 
     # Convergence is flagged by is_converged inside the fixpoint_map.
     x = ScfVariables(basis, ρ; iterate_on, ham)
@@ -389,7 +321,7 @@ function self_consistent_field(
     # to return a correct variational energy and to build a Hamiltonian without any compression
     # applied to the exchange operator.
     (; ψ, occupation, eigenvalues, εF, converged) = info
-    ρ = info.ρout
+    ρ = info.ρ
     τ = compute_τ(info)
     hubbard_n = compute_hubbard_n(info)
     energies, ham = energy_hamiltonian(basis, ψ, occupation; 
@@ -401,8 +333,9 @@ function self_consistent_field(
     scfres = (; ham, basis, energies, converged, nbandsalg.occupation_threshold,
                 ρ, τ, hubbard_n, α=damping, eigenvalues, occupation, εF,
                 info.n_bands_converge, info.n_iter, info.n_matvec, ψ, info.diagonalization, 
-                stage=:finalize, info.history_Δρ, info.history_Etot, info.timedout, mixing, 
-                is_converged, nbandsalg, fermialg, diagtolalg, solver, eigensolver, seed, 
+                stage=:finalize, info.history_Δρ, info.history_ΔV, info.history_Δτ, 
+                info.history_Etot, info.timedout, mixing, is_converged, nbandsalg, 
+                fermialg, diagtolalg, solver, eigensolver, seed, 
                 runtime_ns=time_ns() - start_ns, algorithm="SCF")
     callback(scfres)
     scfres
