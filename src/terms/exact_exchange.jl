@@ -10,8 +10,9 @@ where the `kernel` keyword argument is an [`InteractionKernel`](@ref) , typicall
 - the untruncated, unscreened [`Coulomb`](@ref) kernel `G(r, r') = 1/|r - r'|` for
   Hartree-Fock exact exchange, by default some form of regularisation is applied,
   see e.g. [`ProbeCharge`](@ref).
-- [`SphericallyTruncatedCoulomb`](@ref) for a Coulomb kernel with truncated range, that
-  converges faster with the ``k``-point grid.
+- [`SphericallyTruncatedCoulomb`](@ref) and 
+- [`WignerSeitzTruncatedCoulomb`](@ref) for a Coulomb kernels with truncated range, 
+  that converge faster with the size of the Born-von Karman cell.
 - [`ShortRangeCoulomb`](@ref) the `erf`-truncated short-range Coulomb kernel
 - [`LongRangeCoulomb`](@ref) the `erf`-truncated long-range Coulomb kernel
 """
@@ -138,7 +139,7 @@ function compress_exchange(Vxk::ExchangeOperator, ψk::AbstractMatrix,
     kpt = Vxk.kpoint
 
     Wk = similar(ψk)
-    Wnk_real_tmp = similar(ψk_real[:, :, :, 1])
+    Wnk_real_tmp = similar(ψk_real, size(ψk_real)[1:3]...)
     for (Wnk, ψnk_real) in zip(eachcol(Wk), eachslice(ψk_real, dims=4))
         # Compute Wnk = Vxk * ψnk in real space
         Wnk_real_tmp .= 0

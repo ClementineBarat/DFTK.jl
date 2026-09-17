@@ -1,7 +1,7 @@
-# these provide fixed-point solvers that can be passed to `self_consistent_field`
-
-# the fp_solver function must accept being called like
-# `fp_solver(f, x0, info0; maxiter)`, where `f` is the fixed-point map.
+# This file provides fixed-point solvers that can be passed to `self_consistent_field`
+#
+# The callables subtyping `ScfSolver` must accept being called like
+# `fp_solver(f, x0, info0; maxiter, damping)`, where `f` is the fixed-point map.
 #
 # The fixed-point map `f` is expected to be called as such:
 #    `(fx, info) = f(x, info)`
@@ -14,29 +14,39 @@
 #
 # The solver must return an object supporting res.fixpoint and res.info
 
+abstract type ScfSolver end
+
 """
-Create a simple fixed-point iterations-based solver, updating the density
-as -`x = damping * x_new + (1 - damping) * x`. For applying damping or mixing,
-see also the other keyword arguments of [`self_consistent_field`](@ref).
+Create a simple solver based on damped fixed-point iterations. It updates the
+generalised density `x` (i.e. the concatenation of `ρ` and `τ`) as
+`x = damping * x_new + (1 - damping) * x`. For choosing the damping value
+or applying some kind of mixing, see the other keyword arguments of
+[`self_consistent_field`](@ref).
 """
-function scf_damping_solver(; damping=1.0)
-    function fp_solver(f, x0, info0; maxiter)
-        β = convert(eltype(x0), damping)
-        x = x0
-        info = info0
-        for i = 1:maxiter
-            fx, info = f(x, info)
-            if info.converged || info.timedout
-                break
-            end
-            x = @. β * fx + (1 - β) * x
+struct ScfDampingSolver <: ScfSolver end
+function (scf::ScfDampingSolver)(f, x0, info0; maxiter, damping)
+    β = convert(eltype(x0), damping)
+    x = x0
+    info = info0
+    for _ = 1:maxiter
+        fx, info = f(x, info)
+        if info.converged || info.timedout
+            break
         end
-        (; fixpoint=x, info)
+        x = @. β * fx + (1 - β) * x
     end
+    (; fixpoint=x, info)
 end
+
 
 @doc raw"""
 Create an anderson-accelerated SCF solver for the [`self_consistent_field`](@ref) solver.
+
+This solver only performs damping and anderson acceleration in the density, but
+not in the kinetic energy density. For functionals not involving the kinetic energy
+density `τ` this algorithm is equivalent to [`ScfAndersonSolver`](@ref).
+For meta-GGA functionals this algorithms can be faster than [`ScfAndersonSolver`](@ref),
+but generally [`ScfAndersonDensitySolver`](@ref) is more reliable. 
 
 ## Keyword arguments
 - `m::Integer`       (default: `10`) Maximal Anderson history size

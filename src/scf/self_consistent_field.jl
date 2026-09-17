@@ -233,7 +233,7 @@ function self_consistent_field(
     maxtime=Year(1),
     mixing=LdosMixing(),
     damping=0.8,
-    solver=scf_anderson_solver(),
+    solver=ScfAndersonDensitySolver(),
     eigensolver=lobpcg_hyper,
     diagtolalg=default_diagtolalg(basis; tol),
     nbandsalg::NbandsAlgorithm=AdaptiveBands(basis.model),
