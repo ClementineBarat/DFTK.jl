@@ -403,7 +403,8 @@ end
     end
 
     MPI.Bcast!(mixed_ΔV, 0, MPI.COMM_WORLD) 
-    return mixed_ΔV
+    #return mixed_ΔV
+    return mixed_ΔV .+ mean(ΔV) .- mean(mixed_ΔV)
 end
 
 function default_smearing_temperature(model::Model)
