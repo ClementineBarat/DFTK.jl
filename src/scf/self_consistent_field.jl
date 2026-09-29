@@ -290,7 +290,6 @@ function self_consistent_field(
                                         history_Δρ, history_ΔV, history_Δτ))
 
         # Apply mixing to the SCF variables
-        #@show norm(info_next.ρin)
         x_next = x_in .+ T(damping) .* mix_variables(mixing, basis, Δx; info_next...)
 
         converged = n_iter ≥ miniter && is_converged(info_next)
